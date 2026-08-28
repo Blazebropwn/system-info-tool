@@ -1,219 +1,184 @@
 #!/usr/bin/env python3
-"""
-sysinfo.py – A professional, modular system information tool with CLI
-"""
+"""Cross-platform CLI for inspecting and exporting basic system metrics."""
+
+from __future__ import annotations
+
 import argparse
-import platform
-import psutil
-import socket
-import time
 import json
 import os
-from colorama import Fore, Style, init
+import platform
+import socket
+import time
+from pathlib import Path
+from typing import Any
 
-# Initialize colorama
-init(autoreset=True)
+import psutil
+
+VERSION = "1.1.0"
 
 
-def get_system_info() -> dict:
-    """
-    Retrieve basic system information.
-
-    Returns:
-        dict: OS, node name, release, version, machine, and processor.
-    """
+def get_system_info() -> dict[str, Any]:
     return {
         "system": platform.system(),
         "node_name": platform.node(),
         "release": platform.release(),
         "version": platform.version(),
         "machine": platform.machine(),
-        "processor": platform.processor(),
+        "processor": platform.processor() or "Unavailable",
     }
 
 
-def get_cpu_info() -> dict:
-    """
-    Retrieve CPU details and usage statistics.
-
-    Returns:
-        dict: physical cores, total cores, usage per core, and total usage.
-    """
+def get_cpu_info() -> dict[str, Any]:
     return {
         "physical_cores": psutil.cpu_count(logical=False),
         "total_cores": psutil.cpu_count(logical=True),
-        "usage_per_core": psutil.cpu_percent(percpu=True),
-        "total_usage": psutil.cpu_percent(),
+        "usage_per_core": psutil.cpu_percent(interval=0.1, percpu=True),
+        "total_usage": psutil.cpu_percent(interval=None),
     }
 
 
-def get_memory_info() -> dict:
-    """
-    Retrieve virtual memory statistics.
-
-    Returns:
-        dict: total, available, used memory and percentage.
-    """
+def get_memory_info() -> dict[str, Any]:
     mem = psutil.virtual_memory()
+    gib = 1024**3
     return {
-        "total_gb": round(mem.total / (1024 ** 3), 2),
-        "available_gb": round(mem.available / (1024 ** 3), 2),
-        "used_gb": round(mem.used / (1024 ** 3), 2),
+        "total_gb": round(mem.total / gib, 2),
+        "available_gb": round(mem.available / gib, 2),
+        "used_gb": round(mem.used / gib, 2),
         "usage_percent": mem.percent,
     }
 
 
-def get_disk_info() -> dict:
-    """
-    Retrieve disk partition usage details.
-
-    Returns:
-        dict: mapping of device to its usage stats (total, used, free, percent).
-    """
-    disks = {}
+def get_disk_info() -> dict[str, Any]:
+    disks: dict[str, Any] = {}
+    gib = 1024**3
     for part in psutil.disk_partitions():
         try:
             usage = psutil.disk_usage(part.mountpoint)
-            disks[part.device] = {
-                "total_gb": round(usage.total / (1024 ** 3), 2),
-                "used_gb": round(usage.used / (1024 ** 3), 2),
-                "free_gb": round(usage.free / (1024 ** 3), 2),
-                "usage_percent": usage.percent,
-            }
-        except PermissionError:
-            continue  # skip partitions that cannot be accessed
+        except (PermissionError, OSError):
+            continue
+        key = part.device or part.mountpoint
+        disks[key] = {
+            "mountpoint": part.mountpoint,
+            "filesystem": part.fstype or "Unknown",
+            "total_gb": round(usage.total / gib, 2),
+            "used_gb": round(usage.used / gib, 2),
+            "free_gb": round(usage.free / gib, 2),
+            "usage_percent": usage.percent,
+        }
     return disks
 
 
-def get_network_info() -> dict:
-    """
-    Retrieve basic network information.
-
-    Returns:
-        dict: hostname and primary IP address.
-    """
+def get_network_info() -> dict[str, str]:
     hostname = socket.gethostname()
     try:
-        ip = socket.gethostbyname(hostname)
+        ip_address = socket.gethostbyname(hostname)
     except socket.error:
-        ip = "Unavailable"
-    return {"hostname": hostname, "ip_address": ip}
+        ip_address = "Unavailable"
+    return {"hostname": hostname, "ip_address": ip_address}
 
 
-def display_all() -> None:
-    """
-    Display all collected system information to the console.
-    """
-    sections = [
-        ("SYSTEM INFORMATION", get_system_info()),
-        ("CPU INFORMATION", get_cpu_info()),
-        ("MEMORY INFORMATION", get_memory_info()),
-        ("DISK INFORMATION", get_disk_info()),
-        ("NETWORK INFORMATION", get_network_info()),
-    ]
-    for title, data in sections:
-        print(Fore.CYAN + f"\n=== {title} ===")
-        if isinstance(data, dict):
-            for key, val in data.items():
-                print(f"{key:<15}: {val}")
-        else:
-            print(data)
-
-
-def export_to_file(path: str, fmt: str = "json") -> None:
-    """
-    Export collected information to a file.
-
-    Args:
-        path (str): Output file path.
-        fmt (str): Format - 'json' or 'txt'.
-    """
-    info = {
+def collect_system_info() -> dict[str, Any]:
+    return {
         "system": get_system_info(),
         "cpu": get_cpu_info(),
         "memory": get_memory_info(),
         "disk": get_disk_info(),
         "network": get_network_info(),
     }
-    if fmt == "json":
-        with open(path, "w") as f:
-            json.dump(info, f, indent=4)
+
+
+def _print_mapping(data: dict[str, Any], indent: int = 0) -> None:
+    prefix = " " * indent
+    for key, value in data.items():
+        if isinstance(value, dict):
+            print(f"{prefix}{key}:")
+            _print_mapping(value, indent + 2)
+        else:
+            print(f"{prefix}{key:<18}: {value}")
+
+
+def display_all() -> None:
+    for section, data in collect_system_info().items():
+        print(f"\n=== {section.upper()} ===")
+        _print_mapping(data)
+
+
+def format_text(info: dict[str, Any]) -> str:
+    lines: list[str] = []
+
+    def append_mapping(mapping: dict[str, Any], indent: int = 0) -> None:
+        prefix = " " * indent
+        for key, value in mapping.items():
+            if isinstance(value, dict):
+                lines.append(f"{prefix}{key}:")
+                append_mapping(value, indent + 2)
+            else:
+                lines.append(f"{prefix}{key}: {value}")
+
+    for section, data in info.items():
+        lines.append(f"=== {section.upper()} ===")
+        append_mapping(data)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def export_to_file(path: str) -> None:
+    output = Path(path)
+    suffix = output.suffix.lower()
+    if suffix not in {".json", ".txt"}:
+        raise ValueError("Export file must end in .json or .txt")
+    info = collect_system_info()
+    if suffix == ".json":
+        output.write_text(json.dumps(info, indent=2), encoding="utf-8")
     else:
-        with open(path, "w") as f:
-            for section, data in info.items():
-                f.write(f"=== {section.upper()} ===\n")
-                for key, val in data.items():
-                    f.write(f"{key:<15}: {val}\n")
-                f.write("\n")
-    print(Fore.GREEN + f"Data successfully exported to {path}")
+        output.write_text(format_text(info), encoding="utf-8")
+    print(f"Data exported to {output.resolve()}")
 
 
-def live_monitor(interval: int = 2) -> None:
-    """
-    Live monitoring of CPU and memory usage.
-
-    Args:
-        interval (int): Seconds between updates.
-    """
+def live_monitor(interval: float = 2.0) -> None:
+    if interval <= 0:
+        raise ValueError("Interval must be greater than zero")
     try:
         while True:
             os.system("cls" if os.name == "nt" else "clear")
-            cpu = psutil.cpu_percent()
+            cpu = psutil.cpu_percent(interval=None)
             mem = psutil.virtual_memory().percent
-            print(Fore.CYAN + "=== LIVE MONITORING ===")
-            print(f"CPU Usage     : {cpu}%")
-            print(f"Memory Usage  : {mem}%")
+            print("=== LIVE MONITORING ===")
+            print(f"CPU Usage    : {cpu}%")
+            print(f"Memory Usage : {mem}%")
+            print("Press Ctrl+C to stop.")
             time.sleep(interval)
     except KeyboardInterrupt:
-        print(Fore.RED + "\nLive monitoring stopped by user.")
+        print("\nMonitoring stopped.")
 
 
-def parse_args() -> argparse.Namespace:
-    """
-    Parse command-line arguments.
-
-    Returns:
-        argparse.Namespace: Parsed arguments.
-    """
-    parser = argparse.ArgumentParser(
-        description="System Info Tool: Display or export system metrics."
-    )
-    parser.add_argument(
-        "-d", "--display", action="store_true",
-        help="Display all system information"
-    )
-    parser.add_argument(
-        "-e", "--export", metavar="FILE",
-        help="Export information to specified file (supports .json or .txt)"
-    )
-    parser.add_argument(
-        "-l", "--live", action="store_true",
-        help="Start live CPU and memory monitoring"
-    )
-    parser.add_argument(
-        "-i", "--interval", type=int, default=2,
-        help="Interval in seconds for live monitoring (default: 2)"
-    )
-    return parser.parse_args()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Display, export, or monitor basic system metrics.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("-d", "--display", action="store_true", help="Display system information")
+    actions.add_argument("-e", "--export", metavar="FILE", help="Export to .json or .txt")
+    actions.add_argument("-l", "--live", action="store_true", help="Monitor CPU and memory usage")
+    parser.add_argument("-i", "--interval", type=float, default=2.0, help="Refresh interval in seconds")
+    return parser
 
 
-def main() -> None:
-    """
-    Main entry point of the tool.
-    """
-    args = parse_args()
-
-    if args.display:
-        display_all()
-    elif args.export:
-        fmt = args.export.split('.')[-1]
-        export_to_file(args.export, fmt)
-    elif args.live:
-        live_monitor(args.interval)
-    else:
-        # If no arguments, show help
-        print(Style.BRIGHT + "No action specified. Use -h for help.")
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        if args.display:
+            display_all()
+        elif args.export:
+            export_to_file(args.export)
+        elif args.live:
+            live_monitor(args.interval)
+        else:
+            parser.print_help()
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
