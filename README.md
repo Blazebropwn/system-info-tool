@@ -2,6 +2,8 @@
 
 A small cross-platform Python CLI for inspecting system metrics, exporting reports, and monitoring CPU and memory usage.
 
+[![CI](https://github.com/Blazebropwn/system-info-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/Blazebropwn/system-info-tool/actions/workflows/ci.yml)
+
 ## Features
 
 - OS and hardware information
